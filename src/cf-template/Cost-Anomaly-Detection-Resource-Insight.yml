@@ -41,6 +41,7 @@ Resources:
   EventsSNSTopic:
     Type: AWS::SNS::Topic
     Properties:
+      KmsMasterKeyId: alias/aws/sns
       DisplayName: !Sub ${AWS::StackName}-CADRI-Event-topic
       TopicName: !Sub ${AWS::StackName}-CADRI-Event-topic
   
@@ -479,6 +480,7 @@ Resources:
     Type: AWS::SNS::Topic
     Condition: ShouldDeployDefaultNotificationFlowResources
     Properties:
+      KmsMasterKeyId: alias/aws/sns
       DisplayName: !Sub ${AWS::StackName}-CADRI-notification-topic
       TopicName: !Sub ${AWS::StackName}-CADRI-notification-topic
       Subscription:
