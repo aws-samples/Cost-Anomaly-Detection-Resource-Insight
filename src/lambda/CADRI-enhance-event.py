@@ -49,7 +49,7 @@ def lambda_handler(event, context):
         except Exception as e:
                 logger.error(f"Error processing record: {str(e)}")
                 logger.error(f"Failed record: {json.dumps(record)}")
-                raise
+                continue
     logger.debug("done")
 
     return {
@@ -60,8 +60,13 @@ def post_to_eventbridge(event_detail):
     event_bus_source = os.environ.get('EVENT_BRIDGE_SOURCE_NAME')
     event_detail_type = os.environ.get('EVENT_BRIDGE_DETAIL_TYPE')
     event_bus_name = os.environ.get('EVENT_BRIDGE_BUS_NAME')
-    if not (event_bus_name or event_detail_type or event_bus_source):
-        raise Exception("All Event bus environment variables not set.")
+    if not event_bus_name:
+        raise Exception("EVENT_BRIDGE_BUS_NAME environment variables not set.")
+    
+    if not event_detail_type:
+        raise Exception("EVENT_BRIDGE_DETAIL_TYPE environment variables not set.") 
+    if not event_bus_source:
+        raise Exception("EVENT_BRIDGE_SOURCE_NAME environment variables not set.") 
     
     eventbridge = boto3.client('events')
     try:
@@ -131,6 +136,8 @@ def process_message_for_athena(record):
 
         # Specify the Athena table name
         table_name = os.environ.get('ATHENA_TABLE')
+        if not table_name:
+            raise Exception("ATHENA_TABLE environment variables not set.")
         #table_name = 'cur'
 
         athena_query = f"""
@@ -203,6 +210,7 @@ def process_message_for_athena(record):
         logger.debug(f"Athena results {json.dumps(results)}")    
         return results, data
     except Exception as e:
+        logger.error(f"Error processing Athena message : {str(e)}")
         logger.error(traceback.format_exc())
         raise
     
@@ -211,7 +219,13 @@ def run_athena_query(query_id):
     try:
         # Extract parameters from the event
         database = os.environ.get('ATHENA_DATABSE')
-        output_location = f"s3://{os.environ.get('ATHENA_OUTPUT_LOCATION')}/"
+        if not database:
+            raise Exception("ATHENA_DATABSE environment variables not set.")
+        ouput_s3_bucket = os.environ.get('ATHENA_OUTPUT_LOCATION')
+        if not ouput_s3_bucket:
+            raise Exception("ATHENA_OUTPUT_LOCATION environment variables not set.")
+        
+        output_location = f"s3://{ouput_s3_bucket}/"
         logger.debug(f'{query_id=}')
         
         # Initialize Athena client
@@ -255,11 +269,12 @@ def run_athena_query(query_id):
         else:
             return f"QUERY FAILED WITH STATUS ---- : {status}"
     except Exception as e:
+        logger.error(traceback.format_exc())
         raise
 
 def format_data_as_table(data):
     try:
-        logger.info(f"data in format_data_as_table {data}")
+        logger.debug(f"data in format_data_as_table {data}")
         # Extract headers and rows from the data
         headers = [item['VarCharValue'] for item in data[0]['Data']]
         rows = [[entry['VarCharValue'] for entry in row['Data']] for row in data[1:]]
@@ -310,5 +325,6 @@ def format_data_as_table(data):
         # Combine everything into the final table
         table = "\n".join([separator, header_row, separator] + data_rows + [separator])
     except Exception as e:
+        logger.error(traceback.format_exc())
         raise
     return table
