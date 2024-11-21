@@ -221,11 +221,11 @@ def run_athena_query(query_id):
         database = os.environ.get('ATHENA_DATABSE')
         if not database:
             raise Exception("ATHENA_DATABSE environment variables not set.")
-        ouput_s3_bucket = os.environ.get('ATHENA_OUTPUT_LOCATION')
-        if not ouput_s3_bucket:
+        output_s3_bucket = os.environ.get('ATHENA_OUTPUT_LOCATION')
+        if not output_s3_bucket:
             raise Exception("ATHENA_OUTPUT_LOCATION environment variables not set.")
         
-        output_location = f"s3://{ouput_s3_bucket}/"
+        output_location = f"s3://{output_s3_bucket}/"
         logger.debug(f'{query_id=}')
         
         # Initialize Athena client
