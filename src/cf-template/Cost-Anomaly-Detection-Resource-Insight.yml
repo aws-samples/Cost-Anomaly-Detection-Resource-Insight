@@ -1,0 +1,650 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS CADRI - Enhance the event from AWS Cost Anomaly Detection with information from the top resource IDs that contributed to the anomaly.
+Parameters:
+  DefaultNoticationFlow:
+    Type: String
+    Default: 'yes'
+    AllowedValues: ['yes', 'no']
+    Description: 'Would you like to deploy the default notification flow that uses SNS to send the enhanced Cost Anomaly Detection messages?'
+  Email:
+    Type: String
+    AllowedPattern: '[^@]+@[^@]+\.[^@]+'
+    Description: 'Email address to be associated with the SNS topic for the default notification flow'
+    ConstraintDescription: 'Please ensure that the provided email address is valid and correctly formatted'
+  AthenaDB:
+    Type: String
+    Description: 'Database that contains the table with the Cost and Usage report'
+  AthenaTable:
+    Type: String
+    Description: 'Name of the table with the Cost and Usage report'
+  QueryOutputLocation:
+    Type: String
+    Description: 'S3 location to store Athena query results. Only the name without S3://'
+  CURS3Bucket:
+    Type: String
+    Description: 'S3 location where the Cost and Usage Report. Only the name without S3://'
+  ConcurrencyLimit:
+    Type: Number
+    Default: 1
+    Description: 'Enter the concurrency limit for the Lambda functions (default is 1).'
+
+Conditions:
+  ShouldDeployDefaultNotificationFlowResources:
+    !Equals [!Ref DefaultNoticationFlow, "yes"]
+
+Resources:
+  EventBridgeBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub ${AWS::StackName}-CADRI-EventBridge-bus
+  
+  EventsSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Sub ${AWS::StackName}-CADRI-Event-topic
+      TopicName: !Sub ${AWS::StackName}-CADRI-Event-topic
+  
+  EventsSNSPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref EventsSNSTopic
+      PolicyDocument:
+        Version: "2008-10-17"
+        Id: "AWS Cost Anomaly Detection Policy"
+        Statement:
+          - Sid: "AWSAnomalyDetectionSNSPublishingPermissions"
+            Effect: "Allow"
+            Principal:
+              Service: "costalerts.amazonaws.com"
+            Action: "SNS:Publish"
+            Resource: !Ref EventsSNSTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref "AWS::AccountId"
+
+  LambdaEnhanceCostAnomalyDetectionFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: 'AWS CADRI - Lambda function that receives the event from AWS Cost Anomaly Detection and enhances the notification with the main resource IDs.'
+      FunctionName: !Sub ${AWS::StackName}-CADRI-enhance-event
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Role: !GetAtt 'LambdaEnhanceCostAnomalyRole.Arn'
+      MemorySize: 128
+      Timeout: 480
+      ReservedConcurrentExecutions: !Ref ConcurrencyLimit
+      Environment:
+        Variables:
+          ATHENA_DATABSE: !Ref AthenaDB
+          ATHENA_OUTPUT_LOCATION: !Ref QueryOutputLocation
+          ATHENA_TABLE: !Ref AthenaTable
+          EVENT_BRIDGE_BUS_NAME: !Ref EventBridgeBus
+          EVENT_BRIDGE_DETAIL_TYPE: 'CADRIEvent'
+          EVENT_BRIDGE_SOURCE_NAME: 'custom.cadri'
+          LOG_LEVEL: 'DEBUG'
+      Code:
+        ZipFile: |
+          import os
+          import json
+          import logging
+          from datetime import datetime, timedelta
+          import boto3
+          import time
+          import traceback
+
+          logger = logging.getLogger(__name__)
+          logger.setLevel(getattr(logging, os.environ.get('LOG_LEVEL', 'INFO').upper(), logging.INFO))
+          #logging.getLogger().setLevel(logging.DEBUG)
+
+          def lambda_handler(event, context):
+              logger.debug(f"Incoming event: {json.dumps(event)}")
+              
+              if not event.get('Records'):
+                      logger.error("No Records found in event")
+                      return {
+                          'statusCode': 500,
+                          'body': 'No Records found in event'
+                      }
+              
+              for record in event['Records']:
+                  try:
+                      response, data = process_message_for_athena(record)
+                      logger.debug(f"reponse type {type(response)}")
+                      
+                      # Ensure response is a dictionary
+                      response_json = {
+                          "anomalies": response if isinstance(response, list) else [response],
+                          "anomaly_count": len(response) if isinstance(response, list) else 1
+                      }
+
+                      #response_json=json.loads(json.dumps(response))
+                      logger.debug(f"response_json type {type(response_json)}")
+
+                      table = format_data_as_table(data)
+                      email_table = {
+                          "email_table": table
+                      }
+                      response_json.update(email_table)
+                      original_alert = json.loads(f'{{ "original_alert": {record["Sns"]["Message"]} }}')
+                      logger.debug(f"original_alert type {type(original_alert)}")
+                      response_json.update(original_alert)
+                      logger.debug(f"json after merging: {json.dumps(response_json)}")
+                      eb_result = post_to_eventbridge(response_json)
+                      logger.debug(f"eb_result: {json.dumps(eb_result)}")
+                      
+                  except Exception as e:
+                          logger.error(f"Error processing record: {str(e)}")
+                          logger.error(f"Failed record: {json.dumps(record)}")
+                          raise
+              logger.debug("done")
+
+              return {
+                  'statusCode': 200
+              }
+
+          def post_to_eventbridge(event_detail):
+              event_bus_source = os.environ.get('EVENT_BRIDGE_SOURCE_NAME')
+              event_detail_type = os.environ.get('EVENT_BRIDGE_DETAIL_TYPE')
+              event_bus_name = os.environ.get('EVENT_BRIDGE_BUS_NAME')
+              if not (event_bus_name or event_detail_type or event_bus_source):
+                  raise Exception("All Event bus environment variables not set.")
+              
+              eventbridge = boto3.client('events')
+              try:
+                  response = eventbridge.put_events(
+                      Entries=[
+                          {
+                              'Source': event_bus_source,
+                              'DetailType': event_detail_type,
+                              'Detail': json.dumps(event_detail),
+                              'EventBusName': event_bus_name  
+                          }
+                      ]
+                  )
+                  
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({
+                          'message': 'Event published successfully',
+                          'eventID': response['Entries'][0]['EventId']
+                      })
+                  }
+                  
+              except Exception as e:
+                  logger.error(f"Error processing record: {str(e)}")
+                  raise
+            
+          def process_message_for_athena(record):
+              try:
+                  message = json.loads(record['Sns']['Message'])
+                  logger.info(f"Processed message {message}")
+                  
+                  # Create the filter condition
+                  conditions = []
+                  for cause in message['rootCauses']:
+                      logger.debug(f"rootCauses - 1 {cause}")
+                      condition = (f"line_item_usage_account_id = '{cause['linkedAccount']}' AND "
+                              f"line_item_usage_type = '{cause['usageType']}' ")
+                      conditions.append(condition)
+                  logger.debug(f"conditions - 1 {conditions}")
+                  # Join all conditions with ' OR '
+                  account_service_and_usage_filter = ' OR '.join(conditions)
+
+                  # Wrap the entire output in parentheses
+                  account_service_and_usage_filter = f"({account_service_and_usage_filter})"
+
+                  # Parse start and end dates from the event
+                  start_date = datetime.strptime(message['anomalyStartDate'], "%Y-%m-%dT%H:%M:%SZ")
+                  end_date = datetime.strptime(message['anomalyEndDate'], "%Y-%m-%dT%H:%M:%SZ")
+
+                  logger.debug(f"start_date - {start_date} end_date {end_date}")
+                  # Calculate the duration of the anomaly
+                  duration = (end_date - start_date).days + 1
+
+                  # Calculate date parameters for the query
+                  query_start_date = start_date - timedelta(days=duration)
+                  query_end_date = end_date + timedelta(days=1)
+                  previous_period_start_date = start_date - timedelta(days=duration)
+                  previous_period_end_date = end_date - timedelta(days=duration)
+
+                  # Format the dates as strings for the SQL query
+                  query_start_date_str = query_start_date.strftime('%Y-%m-%d')
+                  query_end_date_str = query_end_date.strftime('%Y-%m-%d')
+                  previous_period_start_date_str = previous_period_start_date.strftime('%Y-%m-%d')
+                  previous_period_end_date_str = previous_period_end_date.strftime('%Y-%m-%d')
+                  current_period_start_date_str = start_date.strftime('%Y-%m-%d')
+                  current_period_end_date_str = end_date.strftime('%Y-%m-%d')
+
+                  # Specify the Athena table name
+                  table_name = os.environ.get('ATHENA_TABLE')
+                  #table_name = 'cur'
+
+                  athena_query = f"""
+                      WITH daily_costs AS (
+                          SELECT 
+                              line_item_resource_id,
+                              line_item_usage_account_id,
+                              product_servicename,
+                              DATE(line_item_usage_start_date) AS usage_date,
+                              SUM(line_item_unblended_cost) AS total_cost
+                          FROM 
+                              {table_name}
+                          WHERE 
+                              {account_service_and_usage_filter}
+                              AND line_item_usage_start_date >= DATE '{query_start_date_str}'
+                              AND line_item_usage_start_date < DATE '{query_end_date_str}'
+                          GROUP BY 
+                              line_item_resource_id, 
+                              line_item_usage_account_id,
+                              product_servicename,
+                              DATE(line_item_usage_start_date)
+                      ),
+                      cost_summary AS (
+                          SELECT 
+                              line_item_resource_id,
+                              line_item_usage_account_id,
+                              product_servicename,
+                              SUM(CASE WHEN usage_date BETWEEN DATE '{current_period_start_date_str}' AND DATE '{current_period_end_date_str}' THEN total_cost ELSE 0 END) AS anomaly_period_cost,
+                              SUM(CASE WHEN usage_date BETWEEN DATE '{previous_period_start_date_str}' AND DATE '{previous_period_end_date_str}' THEN total_cost ELSE 0 END) AS previous_period_cost
+                          FROM 
+                              daily_costs
+                          GROUP BY 
+                              line_item_resource_id,
+                              line_item_usage_account_id,
+                              product_servicename
+                      ),
+                      cost_growth AS (
+                      SELECT 
+                              line_item_usage_account_id,
+                              product_servicename,
+                              line_item_resource_id,
+                              anomaly_period_cost,
+                              previous_period_cost,
+                              (anomaly_period_cost - previous_period_cost) AS cost_increase,
+                              CASE 
+                                  WHEN previous_period_cost = 0 THEN 100
+                                  ELSE ((anomaly_period_cost - previous_period_cost) / previous_period_cost) * 100
+                              END AS percentage_increase
+                          FROM 
+                              cost_summary
+                      )
+                      SELECT 
+                          line_item_usage_account_id,
+                          product_servicename,
+                          line_item_resource_id,
+                          anomaly_period_cost,
+                          previous_period_cost,
+                          cost_increase,
+                          percentage_increase
+                      FROM 
+                          cost_growth
+                      WHERE
+                          cost_increase > 0
+                      ORDER BY 
+                          cost_increase DESC
+                      LIMIT 5;
+                  """
+                  logger.debug(f"Generated Athena query {athena_query}")
+                  results, data = run_athena_query(athena_query)
+                  logger.debug(f"Athena results {json.dumps(results)}")    
+                  return results, data
+              except Exception as e:
+                  logger.error(traceback.format_exc())
+                  raise
+              
+          def run_athena_query(query_id):
+              """Return answer to Bedrock Agent in expected format."""
+              try:
+                  # Extract parameters from the event
+                  database = os.environ.get('ATHENA_DATABSE')
+                  output_location = f"s3://{os.environ.get('ATHENA_OUTPUT_LOCATION')}/"
+                  logger.debug(f'{query_id=}')
+                  
+                  # Initialize Athena client
+                  athena_client = boto3.client('athena')
+                  response = athena_client.start_query_execution(
+                      QueryString=query_id,
+                      QueryExecutionContext={
+                          'Database': database
+                      },
+                      ResultConfiguration={
+                          'OutputLocation': output_location,
+                      }
+                  )
+                  query_execution_id = response['QueryExecutionId']
+                  
+                  # Wait for the query to complete
+                  while True:
+                      query_status = athena_client.get_query_execution(QueryExecutionId=query_execution_id)
+                      status = query_status['QueryExecution']['Status']['State']
+                      
+                      if status in ['SUCCEEDED', 'FAILED', 'CANCELLED']:
+                          break
+                      
+                      time.sleep(1)
+                  
+                  if status == 'SUCCEEDED':
+                      results = athena_client.get_query_results(QueryExecutionId=query_execution_id)
+                      # Process the results as needed
+                      rows = results['ResultSet']['Rows']
+                      # First row contains column headers
+                      headers = [col['VarCharValue'] for col in rows[0]['Data']]
+                      
+                      # Process data rows
+                      data = []
+                      for row in rows[1:]:
+                          values = [field.get('VarCharValue', '') for field in row['Data']]
+                          row_dict = dict(zip(headers, values))
+                          data.append(row_dict)
+                      logger.debug(f"data results --> {data}")
+                      return data, rows
+                  else:
+                      return f"QUERY FAILED WITH STATUS ---- : {status}"
+              except Exception as e:
+                  raise
+
+          def format_data_as_table(data):
+              try:
+                  logger.info(f"data in format_data_as_table {data}")
+                  # Extract headers and rows from the data
+                  headers = [item['VarCharValue'] for item in data[0]['Data']]
+                  rows = [[entry['VarCharValue'] for entry in row['Data']] for row in data[1:]]
+
+                  # Rename and order columns as required
+                  column_names = ["Account id", "Service", "Resource id", "Current Cost", "Previous Cost", "% Growth"]
+                  column_mapping = {
+                      "Account id": "line_item_usage_account_id",
+                      "Service": "product_servicename",
+                      "Resource id": "line_item_resource_id",
+                      "Current Cost": "anomaly_period_cost",
+                      "Previous Cost": "previous_period_cost",
+                      "% Growth": "percentage_increase",
+                  }
+
+                  mapped_rows = [
+                      [
+                          row[headers.index(column_mapping[column])]
+                          if column_mapping[column] in headers
+                          else ""
+                          for column in column_names
+                      ]
+                      for row in rows
+                  ]
+
+                  # Adjust column widths based on the data
+                  column_widths = [
+                      max(len(str(item)) for item in col)
+                      for col in zip(column_names, *mapped_rows)
+                  ]
+
+                  # Create the table separator
+                  separator = "-" * (sum(column_widths) + len(column_widths) * 3 + 1)
+
+                  # Format the header row
+                  header_row = "| " + " | ".join(
+                      column.ljust(width) for column, width in zip(column_names, column_widths)
+                  ) + " |"
+
+                  # Format the data rows
+                  data_rows = [
+                      "| " + " | ".join(
+                          str(cell).ljust(width) for cell, width in zip(row, column_widths)
+                      ) + " |"
+                      for row in mapped_rows
+                  ]
+
+                  # Combine everything into the final table
+                  table = "\n".join([separator, header_row, separator] + data_rows + [separator])
+              except Exception as e:
+                  raise
+              return table
+
+  LambdaEnhanceCostAnomalyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - 'sts:AssumeRole'
+            Effect: 'Allow'
+            Principal:
+              Service:
+                - 'lambda.amazonaws.com'
+      Policies:
+        - PolicyName: RolePolicy 
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-CADRI-enhance-event:*"  
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:GetBucketLocation
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::${QueryOutputLocation}"
+                  - !Sub "arn:${AWS::Partition}:s3:::${QueryOutputLocation}/*"
+                  - !Sub "arn:${AWS::Partition}:s3:::${CURS3Bucket}"
+                  - !Sub "arn:${AWS::Partition}:s3:::${CURS3Bucket}/*"
+              - Effect: Allow
+                Action:
+                  - glue:GetDatabase
+                  - glue:GetTable
+                  - glue:GetPartitions
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/${AthenaDB}"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/${AthenaDB}/${AthenaTable}"
+              - Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:workgroup/*"
+              - Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource: !GetAtt 'EventBridgeBus.Arn'
+  
+  LambdaSNSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref EventsSNSTopic
+      Protocol: lambda
+      Endpoint: !GetAtt LambdaEnhanceCostAnomalyDetectionFunction.Arn
+
+  LambdaPermissionForSNS:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LambdaEnhanceCostAnomalyDetectionFunction
+      Action: 'lambda:InvokeFunction'
+      Principal: 'sns.amazonaws.com'
+      SourceArn: !Ref EventsSNSTopic
+
+  # Default Notification flow
+
+  NotificationSNSTopic:
+    Type: AWS::SNS::Topic
+    Condition: ShouldDeployDefaultNotificationFlowResources
+    Properties:
+      DisplayName: !Sub ${AWS::StackName}-CADRI-notification-topic
+      TopicName: !Sub ${AWS::StackName}-CADRI-notification-topic
+      Subscription:
+        - Endpoint: !Sub ${Email}
+          Protocol: email
+  
+  LambdaSendNotificationFunction:
+    Type: AWS::Lambda::Function
+    Condition: ShouldDeployDefaultNotificationFlowResources
+    Properties:
+      Description: 'AWS CADRI - Lambda function that sends the enhanced Cost Anomaly Detection notification.'
+      FunctionName: !Sub ${AWS::StackName}-CADRI-send-notification
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Role: !GetAtt 'LambdaSendNotificationRole.Arn'
+      MemorySize: 128
+      Timeout: 60
+      ReservedConcurrentExecutions: !Ref ConcurrencyLimit
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !Ref NotificationSNSTopic
+          LOG_LEVEL: 'DEBUG'
+      Code:
+        ZipFile: |
+          import boto3
+          import logging
+          import os
+
+          logger = logging.getLogger(__name__)
+          logger.setLevel(getattr(logging, os.environ.get('LOG_LEVEL', 'INFO').upper(), logging.INFO))
+          #logging.getLogger().setLevel(logging.DEBUG)
+
+          def create_email_message(event):
+              # Extract anomalies
+              anomalies = event['detail']['anomalies']
+              total_cost_increase = 0
+
+              logger.debug(f"Total number of anomalies: {event['detail']['anomaly_count']}\n")
+              logger.debug("Anomaly Details:")
+
+              mod_email_message = " "
+              total_cost_increase = 0.0
+              for idx, anomaly in enumerate(anomalies, 1):
+                  message = f"""
+                  {idx}, {anomaly['line_item_usage_account_id']}, {anomaly['line_item_resource_id']}, {anomaly['product_servicename']}, ${round(float(anomaly['anomaly_period_cost']),2)}, ${round(float(anomaly['previous_period_cost']),2)}, ${round(float(anomaly['cost_increase']),2)}, {round(float(anomaly['percentage_increase']),2)}%"""
+                  total_cost_increase += float(anomaly['cost_increase'])
+                  mod_email_message = mod_email_message + message
+                  
+              summary = f"The above anomalies caused a total cost increase of ${round(total_cost_increase,2)}"
+
+              email_table = event['detail']['email_table']
+
+
+              emailbody=f"""
+              Hello,
+
+              You are receiving this alert because AWS Cost Anomaly Detection has identified an unusual cost increase. 
+              The anomaly has been validated and the root cause has been determined using the AWS Cost and Usage Report (CUR). 
+
+              * Anomaly Start Date: {event['detail']['original_alert']['anomalyStartDate']}
+              * Anomaly End Date: {event['detail']['original_alert']['anomalyEndDate']}
+
+              Here is the list of the resources that triggered this cost anomaly:
+              
+              {email_table}
+              
+
+              Summary of the Alert: 
+              
+              {summary}
+              
+
+              Please verify if this cost increase is expected and, if necessary, make any adjustments.
+
+              To view the original anomaly report, please click 
+              {event['detail']['original_alert']['anomalyDetailsLink']}.
+
+              Thank you,
+              Anomaly Detection Agent 
+
+              """
+              logger.debug(f"emailbody is {emailbody}")
+              return emailbody
+
+          def lambda_handler(event, context):
+
+              logger.debug(event)
+              emailSnsTopic = os.environ.get('SNS_TOPIC_ARN')
+              emailSubject = 'AWS Cost Anomaly Detection Alert'
+              emailMessage = create_email_message(event)
+              
+              if emailMessage is not None and emailSubject is not None and emailSnsTopic is not None:
+                  sns = boto3.client('sns')
+                  params = {
+                      'Message': emailMessage,
+                      'Subject': emailSubject,
+                      'TopicArn': emailSnsTopic
+                  }
+
+                  try:
+                      response = sns.publish(**params)
+                      logger.debug('MessageId: ' + response['MessageId'])
+                      return None
+
+                  except Exception as e:
+                      logger.error('Error publishing to SNS topic: ' + str(e))
+                      raise e
+              else:
+                  logger.error('Skipping SNS publishing as emailMessage or emailSubject or emailSnsTopic is missing.')
+                  return None
+          
+  LambdaSendNotificationRole:
+    Type: AWS::IAM::Role
+    Condition: ShouldDeployDefaultNotificationFlowResources
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - 'sts:AssumeRole'
+            Effect: 'Allow'
+            Principal:
+              Service:
+                - 'lambda.amazonaws.com'
+      Policies:
+        - PolicyName: RolePolicy 
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-CADRI-send-notification:*"  
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref NotificationSNSTopic
+  
+  EventBridgeRuleSendNotification:
+    Type: AWS::Events::Rule
+    Condition: ShouldDeployDefaultNotificationFlowResources
+    Properties:
+      Name: !Sub ${AWS::StackName}-CADRI-EventBridge-notification-rule
+      Description: EventBridge rule for the default notification flow. This rule will invoke the lambda function that will send the notification email
+      EventBusName: !Ref EventBridgeBus
+      EventPattern:
+        source:
+          - "custom.cadri"
+      Targets:
+        - Arn: !GetAtt LambdaSendNotificationFunction.Arn
+          Id: tragetNotificationLambdaFunction
+
+  LambdaSendNotificationInvoke:
+    Type: AWS::Lambda::Permission
+    Condition: ShouldDeployDefaultNotificationFlowResources
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !GetAtt 'LambdaSendNotificationFunction.Arn'
+      Principal: 'events.amazonaws.com'
+      SourceArn: !GetAtt 'EventBridgeRuleSendNotification.Arn'
+
+Outputs:
+  SNSTopicArn:
+    Description: ARN of the SNS topic to be used as part of the alert subscription for AWS Cost Anomaly Detection.
+    Value: !Ref EventsSNSTopic
