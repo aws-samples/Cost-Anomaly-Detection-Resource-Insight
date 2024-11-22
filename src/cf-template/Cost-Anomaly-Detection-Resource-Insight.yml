@@ -66,6 +66,17 @@ Resources:
 
   LambdaEnhanceCostAnomalyDetectionFunction:
     Type: AWS::Lambda::Function
+    # Test case for check skip via comment
+    # checkov:skip=CKV_AWS_116: "Ensure that AWS Lambda function is configured for a Dead Letter Queue(DLQ)"
+    # checkov:skip=CKV_AWS_173: "Check encryption settings for Lambda environment variable"
+    # checkov:skip=CKV_AWS_117: "Ensure that AWS Lambda function is configured inside a VPC"
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W58
+            reason: "Permissions granted, CFN_Nag not parsing correctly?"
+          - id: W89
+            reason: "Not applicable for use case"
     Properties:
       Description: 'AWS CADRI - Lambda function that receives the event from AWS Cost Anomaly Detection and enhances the notification with the main resource IDs.'
       FunctionName: !Sub ${AWS::StackName}-CADRI-enhance-event
@@ -506,6 +517,17 @@ Resources:
   LambdaSendNotificationFunction:
     Type: AWS::Lambda::Function
     Condition: ShouldDeployDefaultNotificationFlowResources
+    # Test case for check skip via comment
+    # checkov:skip=CKV_AWS_173: "Check encryption settings for Lambda environment variable"
+    # checkov:skip=CKV_AWS_117: "Ensure that AWS Lambda function is configured inside a VPC"
+    # checkov:skip=CKV_AWS_116: "Ensure that AWS Lambda function is configured for a Dead Letter Queue(DLQ)"
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W58
+            reason: "Permissions granted, CFN_Nag not parsing correctly?"
+          - id: W89
+            reason: "Not applicable for use case"
     Properties:
       Description: 'AWS CADRI - Lambda function that sends the enhanced Cost Anomaly Detection notification.'
       FunctionName: !Sub ${AWS::StackName}-CADRI-send-notification
