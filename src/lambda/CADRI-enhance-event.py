@@ -19,7 +19,8 @@ def lambda_handler(event, context):
                 'statusCode': 500,
                 'body': 'No Records found in event'
             }
-    
+    processed_records = 0
+    failed_records = 0
     for record in event['Records']:
         try:
             response, data = process_message_for_athena(record)
@@ -45,15 +46,21 @@ def lambda_handler(event, context):
             logger.debug(f"json after merging: {json.dumps(response_json)}")
             eb_result = post_to_eventbridge(response_json)
             logger.debug(f"eb_result: {json.dumps(eb_result)}")
-            
+            processed_records += 1
         except Exception as e:
                 logger.error(f"Error processing record: {str(e)}")
                 logger.error(f"Failed record: {json.dumps(record)}")
-                continue
-    logger.debug("done")
+                logger.error(traceback.format_exc())
+                failed_records += 1
+
+    logger.info(f"Processed {processed_records} records successfully. Failed to process {failed_records} records.")
 
     return {
-        'statusCode': 200
+        'statusCode': 200,
+        'body': json.dumps({
+            'processed_records': processed_records,
+            'failed_records': failed_records
+        })
     }
 
 def post_to_eventbridge(event_detail):
@@ -149,7 +156,7 @@ def process_message_for_athena(record):
                     DATE(line_item_usage_start_date) AS usage_date,
                     SUM(line_item_unblended_cost) AS total_cost
                 FROM 
-                    {table_name}
+                    "{table_name}"
                 WHERE 
                     {account_service_and_usage_filter}
                     AND line_item_usage_start_date >= DATE '{query_start_date_str}'
@@ -250,25 +257,27 @@ def run_athena_query(query_id):
                 break
             
             time.sleep(1)
+        logger.debug(f"Status is  {status}")   
+        if status != 'SUCCEEDED':
+            error_message = query_status['QueryExecution']['Status'].get('AthenaError', 'Unknown error')
+            raise Exception(f"Athena query failed: {error_message}")
+
+        results = athena_client.get_query_results(QueryExecutionId=query_execution_id)
+        # Process the results as needed
+        rows = results['ResultSet']['Rows']
+        # First row contains column headers
+        headers = [col['VarCharValue'] for col in rows[0]['Data']]
         
-        if status == 'SUCCEEDED':
-            results = athena_client.get_query_results(QueryExecutionId=query_execution_id)
-            # Process the results as needed
-            rows = results['ResultSet']['Rows']
-            # First row contains column headers
-            headers = [col['VarCharValue'] for col in rows[0]['Data']]
-            
-            # Process data rows
-            data = []
-            for row in rows[1:]:
-                values = [field.get('VarCharValue', '') for field in row['Data']]
-                row_dict = dict(zip(headers, values))
-                data.append(row_dict)
-            logger.debug(f"data results --> {data}")
-            return data, rows
-        else:
-            return f"QUERY FAILED WITH STATUS ---- : {status}"
+        # Process data rows
+        data = []
+        for row in rows[1:]:
+            values = [field.get('VarCharValue', '') for field in row['Data']]
+            row_dict = dict(zip(headers, values))
+            data.append(row_dict)
+        logger.debug(f"data results --> {data}")
+        return data, rows
     except Exception as e:
+        logger.error(f"Error executing Athena query: {str(e)}")
         logger.error(traceback.format_exc())
         raise
 
@@ -324,7 +333,8 @@ def format_data_as_table(data):
 
         # Combine everything into the final table
         table = "\n".join([separator, header_row, separator] + data_rows + [separator])
+        return table
     except Exception as e:
         logger.error(traceback.format_exc())
         raise
-    return table
+    
