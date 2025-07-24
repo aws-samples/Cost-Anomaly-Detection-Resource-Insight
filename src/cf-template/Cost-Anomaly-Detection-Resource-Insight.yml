@@ -27,6 +27,9 @@ Parameters:
     Type: Number
     Default: 1
     Description: 'Enter the concurrency limit for the Lambda functions (default is 1).'
+  OrganizationId:
+    Type: String
+    Description: "AWS Organization ID. This ID will allow the solutions to get alerts form all the accounts that are part of the same organization."
 
 Conditions:
   ShouldDeployDefaultNotificationFlowResources:
@@ -62,7 +65,7 @@ Resources:
             Resource: !Ref EventsSNSTopic
             Condition:
               StringEquals:
-                aws:SourceAccount: !Ref "AWS::AccountId"
+                aws:PrincipalOrgID: !Ref OrganizationId
 
   LambdaEnhanceCostAnomalyDetectionFunction:
     Type: AWS::Lambda::Function
