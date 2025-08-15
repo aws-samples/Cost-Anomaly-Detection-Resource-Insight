@@ -53,6 +53,53 @@ def create_email_content(event):
         anomaly_end_date = original_alert.get('anomalyEndDate', 'UNAVAILABLE')
         anomaly_link = original_alert.get('anomalyDetailsLink', '')
         
+        # Create original alert tables
+        impact = original_alert.get('impact', {})
+        
+        # Root causes table
+        root_causes = original_alert.get('rootCauses', [])
+        root_causes_html = ""
+        if len(root_causes) > 0:
+            root_causes_rows = ""
+            for cause in root_causes:
+                root_causes_rows += f"""
+                    <tr>
+                        <td>{cause.get('service', 'N/A')}</td>
+                        <td>{cause.get('region', 'N/A')}</td>
+                        <td>{cause.get('linkedAccount', 'N/A')}</td>
+                        <td>{cause.get('linkedAccountName', 'N/A')}</td>
+                        <td>{cause.get('usageType', 'N/A')}</td>
+                        <td>${cause.get('impactContribution', 'N/A')}</td>
+                    </tr>
+                """
+            
+            root_causes_html = f"""
+                <h3>Root Causes (Orginal Alert):</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Service</th>
+                            <th>Region</th>
+                            <th>Account</th>
+                            <th>Account Name</th>
+                            <th>Usage Type</th>
+                            <th>Impact Contribution</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {root_causes_rows}
+                    </tbody>
+                </table>
+            """
+        
+
+        
+        root_causes_text = ""
+        if len(root_causes) > 0:
+            root_causes_text = "\n\nRoot Causes:\nService\tRegion\tAccount\tAccount Name\tUsage Type\tImpact Contribution"
+            for cause in root_causes:
+                root_causes_text += f"\n{cause.get('service', 'N/A')}\t{cause.get('region', 'N/A')}\t{cause.get('linkedAccount', 'N/A')}\t{cause.get('linkedAccountName', 'N/A')}\t{cause.get('usageType', 'N/A')}\t${cause.get('impactContribution', 'N/A')}"
+        
         body_html = f"""
         <html>
         <head>
@@ -94,17 +141,27 @@ def create_email_content(event):
         <body>
             <p>Hello,</p>
             <p>You are receiving this alert because AWS Cost Anomaly Detection has identified an unusual cost increase. 
-            The anomaly has been validated and the root cause has been determined using the AWS Cost and Usage Report (CUR).</p>
+            The anomaly has been validated and the potential root cause has been determined using the AWS Cost and Usage Report (CUR).</p>
             
             <p><strong>Anomaly Details:</strong></p>
             <ul>
                 <li>Anomaly Start Date: {anomaly_start_date}</li>
                 <li>Anomaly End Date: {anomaly_end_date}</li>
+                <li>Account ID: {original_alert.get('accountId', 'N/A')}</li>
+                <li>Service: {original_alert.get('dimensionalValue', 'N/A')}</li>
                 <li>Total Anomalies: {anomaly_count}</li>
-                <li>Total Cost Increase: ${round(total_cost_increase, 2)}</li>
+                <li>Impact:
+                    <ul>
+                        {f'<li>Max Impact: ${impact.get("maxImpact")}</li>' if impact.get('maxImpact') else ''}
+                        {f'<li>Total Expected Spend: ${impact.get("totalExpectedSpend")}</li>' if impact.get('totalExpectedSpend') else ''}
+                        {f'<li>Total Actual Spend: ${impact.get("totalActualSpend")}</li>' if impact.get('totalActualSpend') else ''}
+                        {f'<li>Total Impact: ${impact.get("totalImpact")}</li>' if impact.get('totalImpact') else ''}
+                        {f'<li>Total Impact Percentage: {impact.get("totalImpactPercentage")}%</li>' if impact.get('totalImpactPercentage') else ''}
+                    </ul>
+                </li>
             </ul>
             
-            <h3>Resources that triggered this cost anomaly:</h3>
+            <h3>Top Resources Contributing to Cost Anomaly (Enhanced Analysis Alert):</h3>
             <table>
                 <thead>
                     <tr>
@@ -121,6 +178,8 @@ def create_email_content(event):
                     {html_rows}
                 </tbody>
             </table>
+            
+            {root_causes_html}
             
             <p>Please verify if this cost increase is expected and, if necessary, make any adjustments.</p>
             
@@ -141,11 +200,18 @@ def create_email_content(event):
         Anomaly Details:
         - Anomaly Start Date: {anomaly_start_date}
         - Anomaly End Date: {anomaly_end_date}
+        - Account ID: {original_alert.get('accountId', 'N/A')}
+        - Service: {original_alert.get('dimensionalValue', 'N/A')}
         - Total Anomalies: {anomaly_count}
-        - Total Cost Increase: ${round(total_cost_increase, 2)}
+        - Impact:
+          {f'  - Max Impact: ${impact.get("maxImpact")}' if impact.get('maxImpact') else ''}
+          {f'  - Total Expected Spend: ${impact.get("totalExpectedSpend")}' if impact.get('totalExpectedSpend') else ''}
+          {f'  - Total Actual Spend: ${impact.get("totalActualSpend")}' if impact.get('totalActualSpend') else ''}
+          {f'  - Total Impact: ${impact.get("totalImpact")}' if impact.get('totalImpact') else ''}
+          {f'  - Total Impact Percentage: {impact.get("totalImpactPercentage")}%' if impact.get('totalImpactPercentage') else ''}
         
-        Resources that triggered this cost anomaly:
-        Account ID\tService\tResource ID\tCurrent Cost\tPrevious Cost\tCost Increase\t% Increase{text_rows}
+        Top Resources Contributing to Cost Anomaly (Enhanced Analysis):
+        Account ID\tService\tResource ID\tCurrent Cost\tPrevious Cost\tCost Increase\t% Increase{text_rows}{root_causes_text}
         
         Please verify if this cost increase is expected and, if necessary, make any adjustments.
         
