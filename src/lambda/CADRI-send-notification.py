@@ -161,7 +161,7 @@ def create_email_content(event):
                 </li>
             </ul>
             
-            <h3>Top Resources Contributing to Cost Anomaly (Enhanced Analysis Alert):</h3>
+            <h3>Top Resources Contributing to Cost Anomaly (Enhanced Alert):</h3>
             <table>
                 <thead>
                     <tr>
@@ -186,7 +186,7 @@ def create_email_content(event):
             <p>To view the original anomaly report, please <a href="{anomaly_link}">click here</a>.</p>
             
             <p>Thank you,<br>
-            Anomaly Detection Agent</p>
+            CADRI</p>
         </body>
         </html>
         """
@@ -210,7 +210,7 @@ def create_email_content(event):
           {f'  - Total Impact: ${impact.get("totalImpact")}' if impact.get('totalImpact') else ''}
           {f'  - Total Impact Percentage: {impact.get("totalImpactPercentage")}%' if impact.get('totalImpactPercentage') else ''}
         
-        Top Resources Contributing to Cost Anomaly (Enhanced Analysis):
+        Top Resources Contributing to Cost Anomaly (Enhanced Alert):
         Account ID\tService\tResource ID\tCurrent Cost\tPrevious Cost\tCost Increase\t% Increase{text_rows}{root_causes_text}
         
         Please verify if this cost increase is expected and, if necessary, make any adjustments.
@@ -218,7 +218,7 @@ def create_email_content(event):
         To view the original anomaly report, please visit: {anomaly_link}
         
         Thank you,
-        Anomaly Detection Agent
+        CADRI
         """
         
         logger.debug("Email content created successfully")
