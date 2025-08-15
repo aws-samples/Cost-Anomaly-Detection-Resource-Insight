@@ -11,6 +11,10 @@ Metadata:
           - AthenaTable
           - QueryOutputLocation
           - CURS3Bucket
+      - Label:
+          default: "SNS Topic Policy Configuration"
+        Parameters:
+          - PolicyType
           - OrganizationId
       - Label:
           default: "Notification Flow Configuration"
@@ -36,8 +40,12 @@ Metadata:
       RecipientEmails:
         default: "Recipient Emails"
         description: "Comma-separated list of email addresses to receive notifications"
+      PolicyType:
+        default: "Policy Type"
+        description: "Choose the type of policy for the SNS topic"
       OrganizationId:
-        default: "Organization ID for the SNS Topic Policy to get Cost Anomaly Detection alerts. See your Organization ID here: https://console.aws.amazon.com/organizations/v2/home/accounts"
+        default: "Organization ID"
+        description: "Organization ID for organization-level policy (required only if Policy Type is Organization)."
 
 Parameters:
   DefaultNoticationFlow:
@@ -45,6 +53,12 @@ Parameters:
     Default: 'yes'
     AllowedValues: ['yes', 'no']
     Description: 'Would you like to deploy the default notification flow that uses SNS to send the enhanced Cost Anomaly Detection messages?'
+  
+  PolicyType:
+    Type: String
+    Default: 'Account'
+    AllowedValues: ['Account', 'Organization']
+    Description: 'Choose Account for single account access or Organization for multi-account organization access'
   
   SenderEmail:
     Type: String
@@ -77,13 +91,18 @@ Parameters:
   
   OrganizationId:
     Type: String
-    AllowedPattern: ^o-[a-z0-9]{10,32}$
-    Description: "The Organization ID (starts with 'o-') of the AWS Organization you wish to collect anomaly alerts from."
-    ConstraintDescription: "The Organization ID is required to properly configure the SNS Topic Policy that will be used by Cost Anomaly Detection."
+    Default: ''
+    AllowedPattern: '^$|^o-[a-z0-9]{10,32}$'
+    Description: "The Organization ID (starts with 'o-') required only if Policy Type is Organization. See your Organization ID here: https://console.aws.amazon.com/organizations/v2/home/accounts"
+    ConstraintDescription: "Organization ID must start with 'o-' followed by 10-32 alphanumeric characters"
 
 Conditions:
   ShouldDeployDefaultNotificationFlowResources:
     !Equals [!Ref DefaultNoticationFlow, "yes"]
+  OrganizationPermission:
+    !Equals [!Ref PolicyType, "Organization"]
+  AccountPermission:
+    !Equals [!Ref PolicyType, "Account"]
 
 Rules:
   ValidateEmailParameters:
@@ -93,6 +112,11 @@ Rules:
         AssertDescription: "SenderEmail is required when Default Notification Flow is enabled"
       - Assert: !Not [!Equals [!Ref RecipientEmails, ""]]
         AssertDescription: "RecipientEmails is required when Default Notification Flow is enabled"
+  ValidateOrganizationId:
+    RuleCondition: !Equals [!Ref PolicyType, "Organization"]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref OrganizationId, ""]]
+        AssertDescription: "OrganizationId is required when Policy Type is Organization"
 
 Resources:
   EventBridgeBus:
@@ -107,8 +131,9 @@ Resources:
       DisplayName: !Sub ${AWS::StackName}-CADRI-Event-topic
       TopicName: !Sub ${AWS::StackName}-CADRI-Event-topic
   
-  EventsSNSPolicy:
+  EventsSNSPolicyForOrganization:
     Type: AWS::SNS::TopicPolicy
+    Condition: OrganizationPermission
     Properties:
       Topics:
         - !Ref EventsSNSTopic
@@ -125,6 +150,26 @@ Resources:
             Condition:
               StringEquals:
                 aws:PrincipalOrgID: !Ref OrganizationId
+
+  EventsSNSPolicyForAccount:
+    Type: AWS::SNS::TopicPolicy
+    Condition: AccountPermission
+    Properties:
+      Topics:
+        - !Ref EventsSNSTopic
+      PolicyDocument:
+        Version: "2008-10-17"
+        Id: "AWS Cost Anomaly Detection Policy"
+        Statement:
+          - Sid: "AWSAnomalyDetectionSNSPublishingPermissions"
+            Effect: "Allow"
+            Principal:
+              Service: "costalerts.amazonaws.com"
+            Action: "SNS:Publish"
+            Resource: !Ref EventsSNSTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref "AWS::AccountId"
 
   LambdaEnhanceCostAnomalyDetectionFunction:
     Type: AWS::Lambda::Function
