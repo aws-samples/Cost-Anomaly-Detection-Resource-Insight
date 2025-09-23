@@ -87,7 +87,7 @@ Parameters:
   
   CURS3Bucket:
     Type: String
-    Description: 'S3 location where the Cost and Usage Report. Only the name without S3://'
+    Description: 'S3 location where the Cost and Usage Report. Only the name without s3:// prefix and without a trailing slash (/)'
   
   OrganizationId:
     Type: String
