@@ -87,7 +87,7 @@ Parameters:
   
   CURS3Bucket:
     Type: String
-    Description: 'S3 location where the Cost and Usage Report. Only the name without s3:// prefix and without a trailing slash (/)'
+    Description: 'S3 bucket name where the Cost and Usage Report is stored (e.g., my-cur-bucket). Do not include s3:// prefix or trailing slash'
   
   OrganizationId:
     Type: String
@@ -124,16 +124,49 @@ Resources:
     Properties:
       Name: !Sub ${AWS::StackName}-CADRI-EventBridge-bus
   
+  EventsSNSKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: 'KMS key for CADRI SNS topic encryption with Cost Anomaly Detection permissions'
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: 'Enable IAM User Permissions'
+            Effect: 'Allow'
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: 'Allow Cost Anomaly Detection Service'
+            Effect: 'Allow'
+            Principal:
+              Service: 'costalerts.amazonaws.com'
+            Action:
+              - 'kms:GenerateDataKey*'
+              - 'kms:Decrypt'
+            Resource: '*'
+            Condition: !If
+              - OrganizationPermission
+              - StringEquals:
+                  aws:PrincipalOrgID: !Ref OrganizationId
+              - StringEquals:
+                  aws:SourceAccount: !Ref 'AWS::AccountId'
+
+  EventsSNSKMSKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/${AWS::StackName}-CADRI-SNS-Key'
+      TargetKeyId: !Ref EventsSNSKMSKey
+
   EventsSNSTopic:
     Type: AWS::SNS::Topic
     Properties:
-      KmsMasterKeyId: alias/aws/sns
+      KmsMasterKeyId: !Ref EventsSNSKMSKey
       DisplayName: !Sub ${AWS::StackName}-CADRI-Event-topic
       TopicName: !Sub ${AWS::StackName}-CADRI-Event-topic
   
-  EventsSNSPolicyForOrganization:
+  EventsSNSPolicy:
     Type: AWS::SNS::TopicPolicy
-    Condition: OrganizationPermission
     Properties:
       Topics:
         - !Ref EventsSNSTopic
@@ -147,29 +180,12 @@ Resources:
               Service: "costalerts.amazonaws.com"
             Action: "SNS:Publish"
             Resource: !Ref EventsSNSTopic
-            Condition:
-              StringEquals:
-                aws:PrincipalOrgID: !Ref OrganizationId
-
-  EventsSNSPolicyForAccount:
-    Type: AWS::SNS::TopicPolicy
-    Condition: AccountPermission
-    Properties:
-      Topics:
-        - !Ref EventsSNSTopic
-      PolicyDocument:
-        Version: "2008-10-17"
-        Id: "AWS Cost Anomaly Detection Policy"
-        Statement:
-          - Sid: "AWSAnomalyDetectionSNSPublishingPermissions"
-            Effect: "Allow"
-            Principal:
-              Service: "costalerts.amazonaws.com"
-            Action: "SNS:Publish"
-            Resource: !Ref EventsSNSTopic
-            Condition:
-              StringEquals:
-                aws:SourceAccount: !Ref "AWS::AccountId"
+            Condition: !If
+              - OrganizationPermission
+              - StringEquals:
+                  aws:PrincipalOrgID: !Ref OrganizationId
+              - StringEquals:
+                  aws:SourceAccount: !Ref 'AWS::AccountId'
 
   LambdaEnhanceCostAnomalyDetectionFunction:
     Type: AWS::Lambda::Function
