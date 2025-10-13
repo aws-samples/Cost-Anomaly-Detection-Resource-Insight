@@ -87,7 +87,7 @@ Parameters:
   
   CURS3Bucket:
     Type: String
-    Description: 'S3 bucket name where the Cost and Usage Report is stored (e.g., my-cur-bucket). Do not include s3:// prefix or trailing slash'
+    Description: 'S3 bucket name where the Cost and Usage Report is stored (e.g., my-cur-bucket). Add just the bucket name without any s3 prefixes or folders. Do not include s3:// prefix or trailing slash'
   
   OrganizationId:
     Type: String
