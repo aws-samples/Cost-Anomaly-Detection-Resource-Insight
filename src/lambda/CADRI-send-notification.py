@@ -5,6 +5,7 @@ from botocore.config import Config
 
 logger = logging.getLogger(__name__)
 logger.setLevel(getattr(logging, os.environ.get('LOG_LEVEL', 'INFO').upper(), logging.INFO))
+#logging.getLogger().setLevel(logging.DEBUG)
 
 # Configure exponential backoff
 retry_config = Config(

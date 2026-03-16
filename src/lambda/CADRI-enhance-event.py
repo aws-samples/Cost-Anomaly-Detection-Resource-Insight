@@ -152,7 +152,7 @@ def process_message_for_athena(record):
                 SELECT 
                     line_item_resource_id,
                     line_item_usage_account_id,
-                    product.service_name AS product_servicename,
+                    product['service_name'] AS product_servicename,
                     DATE(line_item_usage_start_date) AS usage_date,
                     SUM(line_item_unblended_cost) AS total_cost
                 FROM 
@@ -164,7 +164,7 @@ def process_message_for_athena(record):
                 GROUP BY 
                     line_item_resource_id, 
                     line_item_usage_account_id,
-                    product.service_name,
+                    product['service_name'],
                     DATE(line_item_usage_start_date)
             ),
             cost_summary AS (
@@ -286,7 +286,7 @@ def format_data_as_table(data):
         logger.debug(f"data in format_data_as_table {data}")
         # Extract headers and rows from the data
         headers = [item['VarCharValue'] for item in data[0]['Data']]
-        rows = [[entry['VarCharValue'] for entry in row['Data']] for row in data[1:]]
+        rows = [[entry.get('VarCharValue', '') for entry in row['Data']] for row in data[1:]]
 
         # Rename and order columns as required
         column_names = ["Account id", "Service", "Resource id", "Current Cost", "Previous Cost", "% Growth"]

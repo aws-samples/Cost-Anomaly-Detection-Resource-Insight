@@ -373,7 +373,7 @@ Resources:
                           SELECT 
                               line_item_resource_id,
                               line_item_usage_account_id,
-                              product_servicename,
+                              product['service_name'] AS product_servicename,
                               DATE(line_item_usage_start_date) AS usage_date,
                               SUM(line_item_unblended_cost) AS total_cost
                           FROM 
@@ -385,7 +385,7 @@ Resources:
                           GROUP BY 
                               line_item_resource_id, 
                               line_item_usage_account_id,
-                              product_servicename,
+                              product['service_name'],
                               DATE(line_item_usage_start_date)
                       ),
                       cost_summary AS (
@@ -507,7 +507,7 @@ Resources:
                   logger.debug(f"data in format_data_as_table {data}")
                   # Extract headers and rows from the data
                   headers = [item['VarCharValue'] for item in data[0]['Data']]
-                  rows = [[entry['VarCharValue'] for entry in row['Data']] for row in data[1:]]
+                  rows = [[entry.get('VarCharValue', '') for entry in row['Data']] for row in data[1:]]
 
                   # Rename and order columns as required
                   column_names = ["Account id", "Service", "Resource id", "Current Cost", "Previous Cost", "% Growth"]
@@ -670,6 +670,7 @@ Resources:
 
           logger = logging.getLogger(__name__)
           logger.setLevel(getattr(logging, os.environ.get('LOG_LEVEL', 'INFO').upper(), logging.INFO))
+          #logging.getLogger().setLevel(logging.DEBUG)
 
           # Configure exponential backoff
           retry_config = Config(
@@ -1011,7 +1012,7 @@ Resources:
                   return {
                       'statusCode': 500,
                       'body': f'Error sending email alert: {str(e)}'
-                  }    
+                  }
           
   LambdaSendNotificationRole:
     Type: AWS::IAM::Role
