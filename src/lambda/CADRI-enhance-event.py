@@ -152,7 +152,7 @@ def process_message_for_athena(record):
                 SELECT 
                     line_item_resource_id,
                     line_item_usage_account_id,
-                    product_servicename,
+                    product.service_name AS product_servicename,
                     DATE(line_item_usage_start_date) AS usage_date,
                     SUM(line_item_unblended_cost) AS total_cost
                 FROM 
@@ -164,7 +164,7 @@ def process_message_for_athena(record):
                 GROUP BY 
                     line_item_resource_id, 
                     line_item_usage_account_id,
-                    product_servicename,
+                    product.service_name,
                     DATE(line_item_usage_start_date)
             ),
             cost_summary AS (
